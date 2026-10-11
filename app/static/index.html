@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Lenny Growth Assistant</title>
+    
+    <!-- External libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
+    
+    <!-- App styles -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header class="app-header">
+        <div class="logo">
+            <h1>The Lenny Growth Assistant</h1>
+            <span class="subtitle">Oogway Labs Forward-Deployed Engineer Demo</span>
+        </div>
+        <div class="controls">
+            <div class="select-group">
+                <label for="provider-select">Provider:</label>
+                <select id="provider-select">
+                    <option value="ollama" selected>Ollama (Local)</option>
+                    <option value="google">Gemini (Cloud)</option>
+                </select>
+            </div>
+            <div class="select-group">
+                <label for="model-select">Model:</label>
+                <select id="model-select">
+                    <option value="qwen2.5:3b" selected>qwen2.5:3b</option>
+                    <option value="gemini-3.8-flash">gemini-3.8-flash</option>
+                </select>
+            </div>
+            <button id="new-chat-btn" class="secondary-btn">New Conversation</button>
+        </div>
+    </header>
+
+    <main class="app-container">
+        <!-- Chat Panel -->
+        <section class="chat-panel">
+            <div id="chat-history" class="chat-history">
+                <div class="message assistant-message">
+                    <div class="message-content">
+                        Hello! I am The Lenny Growth Assistant, trained on insights from Lenny's Podcast. How can I help you with growth, product, or leadership today?
+                    </div>
+                </div>
+            </div>
+            
+            <div class="chat-input-container">
+                <div id="error-banner" class="error-banner hidden"></div>
+                <form id="chat-form" class="chat-form">
+                    <textarea 
+                        id="user-input" 
+                        placeholder="Ask about growth, product, or leadership..." 
+                        rows="2"
+                        required
+                    ></textarea>
+                    <button type="submit" id="send-btn" class="primary-btn">Send</button>
+                </form>
+                <div class="status-indicator">
+                    <span id="session-status">New Session</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Artifact Viewer Panel -->
+        <section class="artifact-panel" id="artifact-panel">
+            <div class="artifact-header">
+                <h2>Artifact Viewer</h2>
+                <div class="artifact-controls">
+                    <button id="close-artifact-btn" class="icon-btn" title="Close Viewer">&times;</button>
+                </div>
+            </div>
+            <div class="artifact-content empty" id="artifact-content">
+                <div class="empty-state">
+                    <p>No artifact generated yet.</p>
+                    <span>HTML/CSS code blocks will appear here securely.</span>
+                </div>
+                <!-- Sandboxed iframe for safe HTML rendering -->
+                <iframe id="artifact-iframe" class="hidden" sandbox="allow-scripts"></iframe>
+                <!-- Markdown/Text preview -->
+                <div id="artifact-markdown" class="hidden markdown-body"></div>
+            </div>
+        </section>
+    </main>
+
+    <script src="script.js"></script>
+</body>
+</html>
