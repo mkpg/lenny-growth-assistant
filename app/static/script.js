@@ -51,6 +51,7 @@ document.addEventListener("DOMContentLoaded", () => {
         } else {
             modelSelect.innerHTML = `
                 <option value="qwen2.5:3b" selected>qwen2.5:3b</option>
+                <option value="qwen3:4b">Qwen3 4B</option>
             `;
         }
     });
@@ -117,7 +118,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 min timeout
+            const timeoutId = setTimeout(() => controller.abort(), 600000); // 5 min timeout
 
             const response = await fetch("/api/v1/chat", {
                 method: "POST",
@@ -146,13 +147,15 @@ document.addEventListener("DOMContentLoaded", () => {
             }
 
             // Display Answer
+            indicator.cleanup();
             indicator.remove();
             appendAssistantMessage(data.answer, data.citations, data.artifact);
 
         } catch (error) {
+            indicator.cleanup();
             indicator.remove();
             if (error.name === "AbortError") {
-                showError("Request timed out after 120 seconds.");
+                showError("Request timed out after 600 seconds.");
             } else {
                 showError(error.message || "A network error occurred.");
             }
@@ -263,12 +266,32 @@ document.addEventListener("DOMContentLoaded", () => {
         msgDiv.className = "message assistant-message indicator-msg";
         msgDiv.innerHTML = `
             <div class="message-content typing-indicator">
-                <div class="dot"></div>
-                <div class="dot"></div>
-                <div class="dot"></div>
+                <div class="dots-wrap">
+                    <div class="dot"></div>
+                    <div class="dot"></div>
+                    <div class="dot"></div>
+                </div>
+                <span class="thinking-label">Thinking... <span class="timer-val">0s</span></span>
             </div>
         `;
         chatHistory.appendChild(msgDiv);
+
+        const startTime = Date.now();
+        const timerEl = msgDiv.querySelector('.timer-val');
+
+        const intervalId = setInterval(() => {
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            if (elapsed < 60) {
+                timerEl.textContent = `${elapsed}s`;
+            } else {
+                const mins = Math.floor(elapsed / 60);
+                const secs = elapsed % 60;
+                timerEl.textContent = `${mins}m ${String(secs).padStart(2, '0')}s`;
+            }
+        }, 1000);
+
+        msgDiv.cleanup = () => clearInterval(intervalId);
+
         return msgDiv;
     }
 

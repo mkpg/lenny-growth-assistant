@@ -150,8 +150,8 @@ def call_pi_agent(prompt: str, context: str, history: List[Dict[str, str]], prov
             raise PiAgentError(f"Invalid JSON from Pi RPC: {first_line.strip()}")
 
         start_time = time.time()
-        # 60s max timeout for agent inference
-        while time.time() - start_time < 60:
+        # 300s max timeout for agent inference
+        while time.time() - start_time < 600:
             if process.poll() is not None and q_out.empty():
                 if process.returncode != 0:
                     error_message = f"Process exited unexpectedly (code {process.returncode})"
@@ -172,6 +172,9 @@ def call_pi_agent(prompt: str, context: str, history: List[Dict[str, str]], prov
             if event_type == "message_update":
                 update = record.get("assistantMessageEvent", {})
                 if update.get("type") == "text_delta":
+                    assistant_reply += update.get("delta", "")
+                    inference_success = True
+                elif update.get("type") == "thinking_delta":
                     assistant_reply += update.get("delta", "")
                     inference_success = True
                 elif update.get("type") == "error":

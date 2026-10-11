@@ -257,8 +257,14 @@ textarea:focus {
 /* Loading Indicator */
 .typing-indicator {
     display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+}
+.dots-wrap {
+    display: flex;
     gap: 0.25rem;
-    padding: 1rem;
+    align-items: center;
 }
 .dot {
     width: 6px;
@@ -272,6 +278,22 @@ textarea:focus {
 @keyframes bounce {
     0%, 80%, 100% { transform: scale(0); }
     40% { transform: scale(1); }
+}
+.thinking-label {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    font-style: italic;
+    animation: thinking-pulse 2s ease-in-out infinite;
+}
+.timer-val {
+    font-variant-numeric: tabular-nums;
+    font-style: normal;
+    font-weight: 600;
+    color: var(--primary-color);
+}
+@keyframes thinking-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
 }
 
 /* Artifact Panel */

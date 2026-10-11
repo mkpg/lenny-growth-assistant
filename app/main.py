@@ -116,7 +116,7 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
 
     # 4. Validate Provider/Model and Check Credentials
     supported_models = {
-        "ollama": ["qwen2.5:3b"],
+        "ollama": ["qwen2.5:3b", "qwen3:4b"],
         "google": [
             "gemini-3.8-flash"
         ]
@@ -154,7 +154,7 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
         if "api key" in error_str or "unauthorized" in error_str or "401" in error_str:
             sanitized_detail = "Provider authentication failed. The server's API credentials may be missing or invalid."
             status_code = 500
-        elif "not found" in error_str or "404" in error_str or "no longer available" in error_str:
+        elif ("not found" in error_str or "404" in error_str or "no longer available" in error_str) and "using custom model id" not in error_str:
             sanitized_detail = f"The selected model '{request.model}' is currently unavailable from the provider."
             status_code = 502
         elif "timeout" in error_str:
@@ -231,9 +231,15 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
         crud.save_message_pair(db, db_session.id, request.question, assistant_reply)
     except Exception as e:
         logger.error(f"Failed to persist messages: {e}")
+        # Rollback the broken transaction so this session doesn't stay poisoned
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        # Still return the answer to the user — persistence failure is non-fatal
         return ChatResponse(
             session_id=db_session.id,
-            response_type="error",
+            response_type=response_type,
             answer=assistant_reply,
             artifact=artifact_html,
             citations=citations
