@@ -74,7 +74,7 @@ Status of the eight required deliverables specified in Section 6 of the assignme
 | **5** | **architecture.md** | [`./architecture.md`](./architecture.md) | Completed | DB schema, API contracts, Pi RPC mechanics, Evidence Gate, and sandbox boundaries. |
 | **6** | **Agent Transcripts** | [`agent-transcripts/`](./agent-transcripts/) | Completed | Dedicated folder containing genuine session logs and bug diagnoses (e.g., Pi CLI tool exclusion). |
 | **7** | **Automated Tests & UI Test Plan** | [`tests/`](./tests/) | Completed | 116 passing tests (`pytest`) + manual UI verification checklist. |
-| **8** | **Camera-On Demo Video** | YouTube | Pending Upload | 2–3 minute camera-on walkthrough planned per the script in Section 11; URL to be added upon upload. |
+| **8** | **Camera-On Demo Video** | YouTube | Completed | [Watch on YouTube](https://youtu.be/Z4ag47-Lv54) — Covers problem framing, local Ollama demo, artifact viewer, and technical trade-offs. |
 
 ---
 
@@ -240,14 +240,14 @@ python -m pytest -q
 
 ---
 
-## 11. Camera-On Demo Video (Planned Walkthrough)
+## 11. Camera-On Demo Video (Recorded Walkthrough)
 
-**Status:** Planned / Pending Recording  
-**Target URL:** `[To be added upon upload to YouTube]`  
-**Target Duration:** 2–3 minutes | **Format:** Camera-on split screen (Presenter + Live Web Application)
+**Status:** Completed & Live  
+**Video URL:** [https://youtu.be/Z4ag47-Lv54](https://youtu.be/Z4ag47-Lv54)  
+**Format:** Camera-on split screen (Presenter + Live Web Application)
 
-### Walkthrough Agenda:
-- **0:00 – 0:30 | Problem & Engagement Context:** Explanation of the Forward Deployed Engineer scenario for product teams needing grounded transcript research.
-- **0:30 – 1:15 | Local Ollama Demo:** Live demonstration of 100% offline local inference using Ollama (`qwen2.5:3b`) and `nomic-embed-text`, showing citation expansion and exact quote verification.
-- **1:15 – 1:55 | Ship 30 for 30 Skill & In-App Artifact Viewer:** Demonstrating a generated essay and an HTML dashboard inside the sandboxed viewer; showing header artifact count and file downloads.
-- **1:55 – 2:30 | Technical Trade-Off Discussion:** Discussion of the architectural trade-off between **stateless CLI RPC subprocessing vs. native SDKs**, and why **deterministic quote substring validation** was chosen over secondary LLM-as-a-judge calls.
+### Walkthrough Topics Covered:
+- **Problem & Engagement Context:** Forward Deployed Engineer scenario for product teams needing grounded transcript research.
+- **Local Ollama Demo:** Live demonstration of 100% offline local inference using Ollama (`qwen2.5:3b`) and `nomic-embed-text`, showing citation expansion and exact quote verification.
+- **Ship 30 for 30 Skill & In-App Artifact Viewer:** Demonstrating a generated essay and an HTML dashboard inside the sandboxed viewer; showing header artifact count and file downloads.
+- **Technical Trade-Off Discussion:** Architectural trade-off between **stateless CLI RPC subprocessing vs. native SDKs**, and why **deterministic quote substring validation** was chosen over secondary LLM-as-a-judge calls.
