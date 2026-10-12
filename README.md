@@ -151,7 +151,14 @@ ollama pull qwen2.5:3b
 ollama pull nomic-embed-text
 ```
 
-### Step 6: Start the Application
+### Step 6: Ingest Transcript Knowledge Base (If using a fresh database)
+If you are configuring a fresh local database rather than connecting to the pre-seeded development instance, ingest the benchmark podcast episodes (~178 semantic chunks) by running:
+```bash
+python scripts/ingest_sample.py
+```
+This script parses the markdown transcripts, chunks the text while preserving speaker metadata, generates 768-dimensional vector embeddings using Ollama's `nomic-embed-text`, and indexes them in PostgreSQL with pgvector.
+
+### Step 7: Start the Application
 Launch the FastAPI server:
 ```bash
 python -m uvicorn app.main:app --reload
