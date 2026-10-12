@@ -1,111 +1,281 @@
-# Architecture — The Lenny Growth Assistant
+# System Architecture Document (architecture.md)
+## The Lenny Growth Assistant
 
-**Status:** Proposed architecture. Update this document to match the implementation actually built.
+**Project:** Forward Deployed Engineer Take-Home Assignment | Oogway Labs  
+**Repository:** [https://github.com/mkpg/lenny-growth-assistant](https://github.com/mkpg/lenny-growth-assistant)  
+**Status:** Verified Against Repository Implementation  
 
-## 1. Architecture goals
-- Source-grounded answers with traceable provenance.
-- Simple end-to-end system that fits the deadline.
-- Local Ollama demo and one cloud model option.
-- Independent persisted sessions.
-- Constrained agent workflows.
-- Safe artifact rendering and reproducible handoff.
+---
 
-## 2. Logical components
+## 1. System Overview & Component Boundaries
 
-```text
-Browser (vanilla HTML/CSS/JS)
-  ├── Chat + session selector + provider selector
-  ├── Source citation list
-  └── Artifact viewer
-         │ HTTP/JSON
-         ▼
-FastAPI
-  ├── API validation / error mapping / health
-  ├── Session and message service
-  ├── Workflow router
-  │    ├── Grounded Q&A
-  │    ├── Ship 30 essay skill
-  │    └── Artifact generation skill
-  ├── Retrieval service
-  │    ├── PostgreSQL full-text search
-  │    └── pgvector similarity search (if validated)
-  └── Model adapter
-       ├── Ollama (mandatory local demo)
-       └── Cloud provider (at least one)
-         │
-         ▼
-Neon PostgreSQL + pgvector
-  ├── sessions
-  ├── messages
-  ├── transcript_chunks + metadata + embedding
-  └── artifacts
+The **Lenny Growth Assistant** is architected as a modular RAG and agent orchestration platform. The architecture separates concerns between a FastAPI REST backend, a PostgreSQL persistence layer with pgvector for semantic search, a stateless Pi Coding Agent subprocess integration, and a single-page client interface.
+
+```
++-----------------------------------------------------------------------------------------+
+|                                    CLIENT APPLICATION                                   |
+|  - HTML5, Vanilla CSS, Modern JavaScript (Fetch API, DOM Events, marked.js)             |
+|  - In-App Artifact Viewer (Sandboxed Iframe with CSP & Markdown Formatted Viewport)     |
+|  - Real-Time Model/Provider Selectors & Header Artifacts Counter Button                 |
++--------------------------------------------+--------------------------------------------+
+                                             | HTTP REST (JSON)
+                                             v
++-----------------------------------------------------------------------------------------+
+|                                    FASTAPI BACKEND API                                  |
+|                                                                                         |
+|  +---------------------+   +---------------------+   +-------------------------------+  |
+|  | /health & /ready    |   | /api/v1/chat        |   | /api/v1/artifacts/*           |  |
+|  | Diagnostic Probes   |   | Chat & Sessions     |   | Library, Detail, Download     |  |
+|  +---------------------+   +----------+----------+   +---------------+---------------+  |
+|                                       |                              |                  |
+|                                       v                              v                  |
+|  +-----------------------------------------------------------------------------------+  |
+|  |                                  EVIDENCE GATE                                    |  |
+|  |  - JSON Schema Parsing (evidence_state, source_id, quote)                         |  |
+|  |  - Substring Verification: Check quote presence in retrieved chunk text          |  |
+|  +------------------------------------+----------------------------------------------+  |
+|                                       |                                                 |
+|                    +------------------+------------------+                              |
+|                    v                                     v                              |
+|  +------------------------------------+   +------------------------------------------+  |
+|  |       RETRIEVAL ENGINE (RAG)       |   |       PI AGENT SUBPROCESS RPC            |  |
+|  |  - app/retrieval.py                |   |  - app/agent.py                          |  |
+|  |  - Vector query embedding via      |   |  - Portable Discovery (PI_CMD_PATH)      |  |
+|  |    Ollama nomic-embed-text         |   |  - Exec: pi --mode rpc --exclude-tools * |  |
+|  |  - Cosine distance ranking (<->)   |   |  - Providers: Ollama Local, Gemini Cloud |  |
+|  +-----------------+------------------+   +-------------------+----------------------+  |
++--------------------|------------------------------------------|-------------------------+
+                     |                                          |
+                     v                                          v
++---------------------------------------+  +----------------------------------------------+
+|     POSTGRESQL + PGVECTOR (Neon)      |  |             LLM INFERENCE ENGINES            |
+|  - sessions & messages tables         |  |                                              |
+|  - transcript_chunks table            |  |  [Local Ollama]         [Cloud Providers]    |
+|    (vector(768) + HNSW index)         |  |  - qwen2.5:3b           - gemini-2.5-flash   |
+|  - artifacts table                    |  |  - qwen3:4b             - gemini-pro         |
+|    (id, session_id, type, content)    |  |  - nomic-embed-text                          |
++---------------------------------------+  +----------------------------------------------+
 ```
 
-The required agent layer must use Pi Coding Agent or Anthropic Claude Agent SDK. The preferred candidate is Pi, conditional on a short smoke test. If its TypeScript runtime adds too much integration cost, use the assignment-permitted Claude Agent SDK for the cloud agent and an explicit Ollama adapter for local mode. Document the final choice and test it. Do not represent a hand-written router alone as satisfying the agent SDK requirement.
+---
 
-## 3. Ingestion and retrieval
-1. Inspect transcript repository layout, metadata, attribution and any licensing terms.
-2. Parse files without assuming every transcript has identical formatting.
-3. Normalize metadata: guest, episode title, source URL, publication date, timestamps where available.
-4. Split into meaningful passages, preferably preserving speaker-turn boundaries and enough adjacent context. Avoid tiny chunks that lose meaning.
-5. Generate embeddings with Ollama `nomic-embed-text` only after confirming the model is available and works.
-6. Store passage text, metadata, embedding and stable source identifier in PostgreSQL.
-7. Search lexical and semantic indexes. Start with a simple, explainable combination; do not add reranking before measuring baseline quality.
-8. Pass only selected evidence and source metadata to the model.
-9. Return answer text plus structured citations that refer to retrieved chunk IDs.
-10. If evidence is absent or weak, abstain or state the uncertainty.
+## 2. Database Schema & Data Models
 
-Citation fields should be populated only when available. Never invent timestamps or source URLs.
+Database persistence is managed via SQLAlchemy ORM connecting to PostgreSQL with the `vector` extension enabled.
 
-## 4. Model and agent routing
-- Provider is selected explicitly via configuration and UI.
-- Local Ollama is mandatory for the demo.
-- At least one cloud provider is supported.
-- Keep retrieval and product workflows shared across providers.
-- Show the selected provider and model.
-- Do not silently fall back. Missing keys/unavailable services return clear, actionable errors.
-- Agent tools/workflows should be bounded:
-  - `search_transcripts`
-  - `write_ship30_essay`
-  - `create_artifact`
-- Normal Q&A should use a predictable retrieval workflow. Additional retrieval attempts are allowed only when evidence is weak and within a bounded limit.
+```
++-------------------+           +-------------------+           +-----------------------+
+|     sessions      | 1       * |     messages      |           |   transcript_chunks   |
++-------------------+-----------+-------------------+           +-----------------------+
+| id (UUID, PK)     |           | id (UUID, PK)     |           | id (Int, PK)          |
+| created_at (Date) |           | session_id (FK)   |           | episode_title (String)|
++---------+---------+           | role (String)     |           | url (String)          |
+          |                     | content (Text)    |           | speaker (String)      |
+          | 1                   | created_at (Date) |           | chunk_index (Int)     |
+          |                     +-------------------+           | content (Text)        |
+          | *                                                   | embedding (vector(768)|
++---------+---------+                                           +-----------------------+
+|     artifacts     |
++-------------------+
+| id (UUID, PK)     |
+| session_id (FK)   |
+| message_id (FK)   |
+| title (String)    |
+| artifact_type(Str)|  <-- "html" or "markdown"
+| content (Text)    |
+| created_at (Date) |
++-------------------+
+```
 
-## 5. Minimal data model
-- `sessions`: id, created_at, updated_at, optional non-sensitive metadata.
-- `messages`: id, session_id, role, content, created_at, provider/model metadata where useful.
-- `transcript_chunks`: id, source_id, guest, episode_title, source_url, published_at, start/end timestamps where available, chunk_index, content, embedding.
-- `artifacts`: id, session_id, message_id if applicable, artifact_type (`markdown` or `html`), title, content, created_at.
+### Table Specifications:
+1. **`sessions`:**
+   - `id`: `UUID` (Primary Key, default `uuid4`).
+   - `created_at`: `DateTime` with timezone.
+2. **`messages`:**
+   - `id`: `UUID` (Primary Key).
+   - `session_id`: `UUID` (Foreign Key referencing `sessions.id`, indexed).
+   - `role`: `VARCHAR(20)` (`"user"` or `"assistant"`).
+   - `content`: `TEXT` (Message body).
+   - `created_at`: `DateTime`.
+3. **`transcript_chunks`:**
+   - `id`: `INTEGER` (Primary Key, auto-increment).
+   - `episode_title`: `VARCHAR(255)`.
+   - `url`: `VARCHAR(512)` (Source podcast URL).
+   - `speaker`: `VARCHAR(100)` (Guest / host name).
+   - `chunk_index`: `INTEGER`.
+   - `content`: `TEXT` (Transcript chunk text).
+   - `embedding`: `Vector(768)` (pgvector 768-dimensional float array).
+4. **`artifacts`:**
+   - `id`: `UUID` (Primary Key).
+   - `session_id`: `UUID` (Foreign Key referencing `sessions.id`, indexed).
+   - `message_id`: `UUID` (Foreign Key referencing `messages.id`, nullable).
+   - `title`: `VARCHAR(255)` (Artifact title).
+   - `artifact_type`: `VARCHAR(50)` (`"html"` or `"markdown"`).
+   - `content`: `TEXT` (Raw HTML or Markdown content).
+   - `created_at`: `DateTime`.
 
-Use stable IDs, foreign keys and indexes. Preserve session isolation in every read/write path. The embedding vector dimension must match the actual embedding model output; do not hardcode a dimension without checking it.
+---
 
-## 6. API contract proposal
-- `GET /health` — app and database readiness status (avoid exposing secrets).
-- `POST /sessions` — create session.
-- `GET /sessions` — list sessions for this local single-user app.
-- `GET /sessions/{session_id}/messages` — fetch session history.
-- `POST /sessions/{session_id}/messages` — submit user message, run selected workflow, persist response and citations.
-- `POST /sessions/{session_id}/artifacts` — optional dedicated endpoint if not handled through message routing.
-- `GET /sessions/{session_id}/artifacts/{artifact_id}` — retrieve artifact, verifying session ownership.
-- `POST /ingest` or a CLI ingestion command — ingest local transcript files; do not expose unrestricted filesystem ingestion in a public API.
+## 3. REST API Contract & Route Catalog
 
-Finalize request/response shapes after inspecting the repository and agent SDK. Validate IDs and payload sizes.
+Routes are versioned and validated via Pydantic schemas in `app/schemas.py`:
 
-## 7. Artifact security
-- Markdown: render with a safe renderer and DOMPurify if HTML-capable rendering is enabled.
-- HTML: render in an iframe using a restrictive `sandbox` attribute without `allow-same-origin`; do not enable arbitrary script execution. Add restrictive CSP, ideally denying network connections and limiting resource sources.
-- Never place model-generated content directly into the trusted application DOM.
-- Do not expose tokens, backend APIs with privileged capabilities, or trusted UI objects to the iframe.
-- Test malicious markup and document the actual tested controls.
+### 3.1 `GET /health`
+- **Purpose:** Liveness probe.
+- **Response:** `200 OK` $\rightarrow$ `{"status": "ok", "env": "development"}`
 
-## 8. Deployment
-- Docker Compose: FastAPI and frontend only (do NOT provision a local PostgreSQL container).
-- Database: Configure Neon PostgreSQL connection via environment variables.
-- Ollama runs on the host unless testing proves containerization is easier; document the correct host address for the user's OS and container network.
-- `.env.example` contains placeholders only.
-- Health checks and dependency readiness must be explicit.
-- Do not assume the host's `localhost` is reachable from a container using the same address.
+### 3.2 `GET /ready`
+- **Purpose:** Readiness probe verifying database connectivity and `vector` extension.
+- **Response:** `200 OK` $\rightarrow$ `{"status": "ready", "database": "connected", "pgvector": "installed"}`
+- **Error Response:** `503 Service Unavailable` if database check fails.
 
-## 9. Observability and failures
-Structured logs should include request/session identifier, workflow, selected provider, retrieval count, latency and error category. Do not log secrets or unnecessary transcript/message contents.
+### 3.3 `POST /api/v1/chat`
+- **Purpose:** Conversational chat and artifact generation pipeline.
+- **Request Body:**
+  ```json
+  {
+    "question": "What is Adam Fishman's advice on growth teams?",
+    "session_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "provider": "ollama",
+    "model": "qwen2.5:3b"
+  }
+  ```
+- **Response Body:** `200 OK`
+  ```json
+  {
+    "session_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "response_type": "grounded_answer",
+    "answer": "According to Adam Fishman...",
+    "artifact": "<!DOCTYPE html>...",
+    "artifact_type": "html",
+    "artifact_id": "7b12c842-1234-5678-90ab-cdef12345678",
+    "artifact_title": "Growth Team Activation Plan",
+    "citations": [
+      {
+        "source_id": "Adam Fishman on Growth",
+        "speaker": "Adam Fishman",
+        "quote": "Onboarding is the foundation of retention."
+      }
+    ]
+  }
+  ```
 
-Expected failures: missing cloud key, Ollama down, timeout, empty retrieval, malformed model output, database unavailable, invalid session, invalid artifact type. Return useful error messages and safe HTTP status codes.
+### 3.4 `GET /api/v1/sessions/{session_id}/artifacts`
+- **Purpose:** Lists all artifacts generated within the specified session.
+- **Response:** `200 OK` $\rightarrow$ `List[ArtifactSummary]` (`id`, `session_id`, `title`, `artifact_type`, `created_at`).
+
+### 3.5 `GET /api/v1/artifacts/{artifact_id}`
+- **Purpose:** Retrieves full artifact content.
+- **Query Parameter:** `session_id` (optional, for session boundary validation).
+- **Security Check:** If `session_id` is provided and does not match the artifact's owner, returns HTTP `403 Forbidden`.
+
+### 3.6 `GET /api/v1/artifacts/{artifact_id}/download`
+- **Purpose:** Directly downloads raw artifact with `Content-Disposition` attachment headers.
+- **Headers:**
+  - Markdown: `Content-Type: text/markdown; charset=utf-8`, `Content-Disposition: attachment; filename="title.md"`
+  - HTML: `Content-Type: text/html; charset=utf-8`, `Content-Disposition: attachment; filename="title.html"`
+
+---
+
+## 4. Ingestion & Retrieval Pipeline (RAG)
+
+### 4.1 Ingestion Flow (`scripts/ingest.py`)
+1. **Document Loading:** Reads markdown transcripts from `data/transcripts/`.
+2. **Semantic Chunking:** Text is split into overlapping chunks (~400–600 tokens) while preserving speaker identifiers.
+3. **Embedding Generation:** Chunks are sent to local Ollama via `POST http://localhost:11434/api/embeddings` using `nomic-embed-text` (generating 768-dimensional dense vectors).
+4. **Vector Storage:** Chunks and embeddings are inserted into the `transcript_chunks` table in PostgreSQL.
+5. **Corpus Scope:** The current database snapshot used during development contains 3 podcast episodes (~178 chunks).
+
+### 4.2 Retrieval Flow (`app/retrieval.py`)
+1. The user query is embedded on-the-fly via `nomic-embed-text`.
+2. Similarity search runs in PostgreSQL using the pgvector cosine distance operator (`<->`):
+   ```sql
+   SELECT id, episode_title, speaker, content, (embedding <-> :q_vec) AS distance
+   FROM transcript_chunks
+   WHERE (embedding <-> :q_vec) < 0.45
+   ORDER BY distance ASC
+   LIMIT 3;
+   ```
+3. Chunks with cosine distance $< 0.45$ (equivalent to cosine similarity $> 0.55$) are assembled into prompt context blocks.
+
+---
+
+## 5. Agent Subprocess RPC Integration
+
+Instead of binding to heavyweight, provider-specific SDKs, the agent integrates with **Pi Coding Agent** in **stateless RPC mode**.
+
+### 5.1 Portable CLI Discovery
+To ensure portability across developer workstations:
+```python
+pi_path = settings.pi_cmd_path or shutil.which("pi") or "pi"
+```
+The application checks the `.env` variable `PI_CMD_PATH` first, falling back to system `PATH` discovery.
+
+### 5.2 Process Execution & Tool Exclusion
+The agent process is launched as a subprocess:
+```python
+process = subprocess.Popen(
+    [
+        pi_cmd_path,
+        "--mode", "rpc",
+        "--no-session",
+        "--provider", provider,
+        "--model", model,
+        "--exclude-tools", "*"
+    ],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True
+)
+```
+
+#### Why `--exclude-tools *` Was Added:
+By default, the Pi Coding Agent exposes built-in file-manipulation tools (`write`, `edit`, `bash`) in the LLM tool schema. When prompts included action verbs like *"Write me an essay..."* or *"Create an HTML file..."*, the model attempted to call tools rather than outputting text. By passing `--exclude-tools *`, the agent is stripped of filesystem tool schemas and operates strictly as a conversational completion engine.
+
+---
+
+## 6. Evidence Gate & Citation Verification
+
+To check factual citations without relying on secondary LLM calls, `app/main.py` implements an **Evidence Gate**:
+
+1. **Structured Agent Prompt:** The system instructs the agent to return a JSON payload with fields: `evidence_state`, `source_id`, `quote`, and `answer`.
+2. **Evidence Evaluation:**
+   - If `evidence_state == "insufficient"`, the assistant returns a refusal acknowledging that the podcast transcripts do not contain the requested information.
+   - If `evidence_state == "sufficient"`, the backend extracts `quote` and matches it against retrieved transcript chunks.
+3. **Substring Verification:**
+   ```python
+   # Verifies exact quote presence in chunk text
+   quote_found = any(quote.lower() in chunk.content.lower() for chunk in retrieved_chunks)
+   ```
+4. **Important Boundary & Limitation:**
+   - **What it guarantees:** If `quote_found` is true, the quoted text physically exists within the retrieved transcript chunk.
+   - **What it does not guarantee:** Verifying a quote does **not** prove that every statement, interpretation, or surrounding claim in the generated answer is semantically grounded. Models can still misinterpret verified quotes or generate unsupported inferences.
+
+---
+
+## 7. Security Controls & Sandbox Architecture
+
+### 7.1 HTML Rendering Sandbox
+When rendering user- or model-generated HTML/CSS:
+1. **Iframe Isolation:** The browser creates an `<iframe>` configured with:
+   ```html
+   <iframe sandbox="allow-scripts" id="artifact-iframe"></iframe>
+   ```
+2. **Omission of `allow-same-origin`:** `allow-same-origin` is intentionally omitted. This isolates the iframe from the parent window's origin. Scripts inside the artifact cannot access:
+   - `window.parent` or parent DOM nodes.
+   - Parent cookies, `localStorage`, or `sessionStorage`.
+   - Authenticated parent application API calls.
+3. **Content Security Policy (CSP):** The iframe content is loaded via a dynamic Blob URL containing a CSP meta tag:
+   ```html
+   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: https:; font-src data: https:;">
+   ```
+4. **Sandbox Limitations:**
+   - `allow-scripts` permits JavaScript execution inside the iframe. While parent data is isolated, security relies on standard browser sandbox enforcement.
+   - Complex external assets or remote scripts are restricted by the CSP, but client-side DOM manipulation inside the iframe is permitted.
+
+### 7.2 Session Isolation
+The Artifact Library enforces session boundaries:
+- Each artifact record is foreign-keyed to `sessions.id`.
+- Retrieval (`/api/v1/artifacts/{id}`) and download (`/api/v1/artifacts/{id}/download`) verify that `artifact.session_id == request.session_id`.
+- Mismatched session access attempts return HTTP `403 Forbidden`.
