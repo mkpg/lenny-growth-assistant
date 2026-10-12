@@ -34,6 +34,7 @@
                     <option value="gemini-3.8-flash">gemini-3.8-flash</option>
                 </select>
             </div>
+            <button id="header-artifacts-btn" class="secondary-btn hidden" title="View Artifacts">Artifacts (<span id="header-artifact-count">0</span>)</button>
             <button id="new-chat-btn" class="secondary-btn">New Conversation</button>
         </div>
     </header>
@@ -66,18 +67,35 @@
             </div>
         </section>
 
-        <!-- Artifact Viewer Panel -->
+        <!-- Artifact Viewer & Library Panel -->
         <section class="artifact-panel" id="artifact-panel">
             <div class="artifact-header">
-                <h2>Artifact Viewer</h2>
+                <div class="artifact-title-wrap">
+                    <h2 id="artifact-header-title">Artifact Viewer</h2>
+                    <span id="artifact-type-badge" class="badge hidden">HTML</span>
+                </div>
                 <div class="artifact-controls">
+                    <button id="toggle-history-btn" class="secondary-btn small-btn" title="View Artifact Library">History (<span id="history-count">0</span>)</button>
+                    <button id="download-artifact-btn" class="secondary-btn small-btn hidden" title="Download Artifact">Download</button>
                     <button id="close-artifact-btn" class="icon-btn" title="Close Viewer">&times;</button>
                 </div>
             </div>
+
+            <!-- History View -->
+            <div id="artifact-history-view" class="artifact-history-drawer hidden">
+                <div class="history-drawer-header">
+                    <h3>Session Artifacts</h3>
+                    <span class="history-subtitle">Click to reopen or download</span>
+                </div>
+                <div id="artifact-history-list" class="history-list">
+                    <div class="history-empty">No artifacts generated in this session yet.</div>
+                </div>
+            </div>
+
             <div class="artifact-content empty" id="artifact-content">
                 <div class="empty-state">
-                    <p>No artifact generated yet.</p>
-                    <span>HTML/CSS code blocks will appear here securely.</span>
+                    <p>No artifact selected.</p>
+                    <span>HTML/CSS artifacts or Markdown documents will appear here securely.</span>
                 </div>
                 <!-- Sandboxed iframe for safe HTML rendering -->
                 <iframe id="artifact-iframe" class="hidden" sandbox="allow-scripts"></iframe>

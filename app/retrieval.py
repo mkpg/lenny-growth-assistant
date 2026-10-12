@@ -22,9 +22,19 @@ def get_embedding(text: str) -> list[float]:
     data = response.json()
     return data["embedding"]
 
-def retrieve_context(query: str, db: Session, top_k: int = 3, threshold: float = 0.45) -> Tuple[str, List[Dict[str, Any]]]:
+def retrieve_context(query: str, db: Session, top_k: int = 8, threshold: float = 0.45) -> Tuple[str, List[Dict[str, Any]]]:
     """
     Retrieves chunks from the database matching the query via pgvector distance.
+
+    ``top_k`` controls how many candidate chunks are fetched from the DB before
+    threshold filtering (default raised to 8 so relevant chunks that rank beyond
+    3rd are not silently excluded).
+
+    Citation deduplication is keyed on ``source_id`` (chunk-level), not on
+    ``source_url`` (episode-level), so distinct chunks from the same episode each
+    appear as separate citation entries.  Chunks with the identical ``source_id``
+    are never duplicated.
+
     Returns:
         A tuple of (formatted_context_string, list_of_citation_dicts)
     Raises:
@@ -41,36 +51,40 @@ def retrieve_context(query: str, db: Session, top_k: int = 3, threshold: float =
 
     distance_col = TranscriptChunk.embedding.cosine_distance(embedding).label('distance')
     stmt = select(TranscriptChunk, distance_col).order_by(distance_col).limit(top_k)
-    
+
     try:
         results = db.execute(stmt).all()
     except Exception as e:
         raise RetrievalError(f"Database query failed during retrieval: {e}")
 
-    unique_citations = []
-    seen_urls = set()
-    context_parts = []
-    
+    unique_citations: List[Dict[str, Any]] = []
+    seen_source_ids: set = set()
+    context_parts: List[str] = []
+
     for chunk, dist in results:
         if dist > threshold:
             continue
-            
-        if chunk.source_url not in seen_urls:
-            seen_urls.add(chunk.source_url)
+
+        # Deduplicate citations at the chunk level (source_id), not the episode
+        # level (source_url), so two distinct chunks from the same episode are
+        # both surfaced as citations.
+        if chunk.source_id not in seen_source_ids:
+            seen_source_ids.add(chunk.source_id)
             citation = {
                 "source_id": chunk.source_id,
                 "episode_title": chunk.episode_title,
                 "source_url": chunk.source_url,
                 "distance": float(dist),
                 "content": chunk.content,
+                "guest": chunk.guest,
             }
             unique_citations.append(citation)
-        
-        # Format the chunk text
+
+        # Every surviving chunk contributes its text to the LLM context.
         context_part = f"Source ID: {chunk.source_id}\n"
         context_part += f"Title: {chunk.episode_title} (URL: {chunk.source_url})\n"
         context_part += f"Excerpt: {chunk.content}\n"
         context_parts.append(context_part)
-        
+
     formatted_context = "\n---\n\n".join(context_parts)
     return formatted_context, unique_citations

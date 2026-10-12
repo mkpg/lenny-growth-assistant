@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     database_url: Optional[str] = None
     database_url_direct: Optional[str] = None
+    pi_cmd_path: Optional[str] = None
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
