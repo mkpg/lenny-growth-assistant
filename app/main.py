@@ -10,49 +10,138 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.config import settings
 from dotenv import load_dotenv
-
 # Load environment variables into os.environ for Pi agent subprocess
 load_dotenv()
-
 # Attempt to import DB components
 try:
     from app.database import get_db, engine
     db_configured = True if engine else False
 except Exception:
     db_configured = False
-    
 # Configure logging
 logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Lenny Growth Assistant")
 
+# The assistant is intentionally limited to source-grounded Lenny content about
+# growth, product, startups, and leadership. This lexical guard handles obvious
+# out-of-scope requests; it is not a general-purpose semantic classifier.
+_SCOPE_TERMS = (
+    "lenny", "podcast", "newsletter", "transcript", "episode", "guest",
+    "growth", "grow", "product", "startup", "startups", "founder",
+    "leadership", "leader", "manager", "management", "team", "hiring",
+    "onboarding", "activation", "retention", "acquisition", "churn",
+    "engagement", "monetization", "pricing", "roadmap", "product-market fit",
+    "market fit", "pmf", "go-to-market", "gtm", "experiment", "experimentation",
+    "a/b test", "metric", "metrics", "kpi", "user research", "customer research",
+    "customer discovery", "product strategy", "strategy", "launch", "positioning",
+    "distribution", "sales", "marketing", "revenue", "funnel", "conversion",
+    "referral", "virality", "marketplace", "saas", "b2b", "b2c", "framework",
+    "career", "prioritization", "prioritisation", "roadmapping", "customer",
+    "users", "product manager", "product management", "business model",
+)
+
+_FOLLOW_UP_PATTERNS = (
+    r"^(why|how so|what do you mean|explain|elaborate|expand|tell me more|give an example|can you clarify)[?.!]*$",
+    r"^(what about|how about)\b",
+    r"^(can you expand on|elaborate on|give me an example of|go deeper on)\b",
+    r"\b(your previous answer|your last answer|that recommendation|those suggestions)\b",
+)
+
+# Strong signals for requests that the podcast-grounded assistant should not
+# answer from retrieved chunks, even if an incidental word such as "product"
+# or "team" appears in the same question.
+_OBVIOUSLY_OUT_OF_SCOPE_PATTERNS = (
+    r"\b(song|songs|music|lyrics|singer|playlist|album)\b",
+    r"\b(chief minister|prime minister|governor of|president of|who is the cm)\b",
+    r"\b(weather forecast|temperature today|stock price|live score)\b",
+)
+
+
+def is_follow_up_question(question: str, history: list[dict]) -> bool:
+    """Recognize obvious follow-ups only when the prior user topic is in scope."""
+    if not history:
+        return False
+
+    normalized = question.strip().casefold()
+    if not any(re.search(pattern, normalized) for pattern in _FOLLOW_UP_PATTERNS):
+        return False
+
+    previous_user_question = next(
+        (
+            str(msg.get("content", ""))
+            for msg in reversed(history)
+            if msg.get("role") == "user" and msg.get("content")
+        ),
+        "",
+    )
+    if not previous_user_question:
+        return False
+
+    # Do not let "why?" or similar follow-ups to an unrelated question bypass
+    # the assistant's scope guard and retrieve unrelated podcast passages.
+    return is_in_scope_question(previous_user_question)
+
+
+def is_in_scope_question(question: str, *, is_history_query: bool = False,
+                         is_follow_up: bool = False) -> bool:
+    """Conservative scope gate; this is a heuristic, not semantic classification."""
+    if is_history_query:
+        return True
+
+    normalized = question.casefold()
+    explicit_source_reference = any(
+        token in normalized for token in ("lenny", "podcast", "newsletter", "transcript", "episode")
+    )
+    if not explicit_source_reference and any(
+        re.search(pattern, normalized)
+        for pattern in _OBVIOUSLY_OUT_OF_SCOPE_PATTERNS
+    ):
+        return False
+
+    if is_follow_up:
+        return True
+
+    # Do not reject a question merely because it lacks one of the known
+    # growth/product keywords. Generic questions should reach retrieval and
+    # evidence validation. Explicitly out-of-scope categories are rejected
+    # above; unsupported questions must abstain at the evidence gate.
+    return True
+
+
+def build_retrieval_query(question: str, history: list[dict], is_follow_up: bool) -> str:
+    """Add the last user question to short follow-ups for retrieval only."""
+    if not is_follow_up:
+        return question
+    previous_user_question = next(
+        (msg.get("content", "") for msg in reversed(history)
+         if msg.get("role") == "user" and msg.get("content")),
+        None,
+    )
+    if not previous_user_question:
+        return question
+    return f"Previous user question: {previous_user_question}\nFollow-up question: {question}"
+app = FastAPI(title="Lenny Growth Assistant")
 # Mount static files for the frontend
 import os
 os.makedirs("app/static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
-
 @app.get("/")
 def read_root():
     return RedirectResponse(url="/static/index.html")
-
-
 @app.get("/health")
 def health_check():
     """Liveness endpoint."""
     return {"status": "ok", "env": settings.app_env}
-
 @app.get("/ready")
 def readiness_check(db: Session = Depends(get_db)):
     """Readiness endpoint verifying database dependency."""
     try:
         # Check DB connection
         db.execute(text("SELECT 1"))
-        
         # Check pgvector extension
         vector_res = db.execute(text("SELECT extname FROM pg_extension WHERE extname = 'vector'")).fetchone()
         pgvector_status = "installed" if vector_res else "not_installed"
-        
         return {
             "status": "ready",
             "database": "connected",
@@ -64,12 +153,10 @@ def readiness_check(db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Readiness check failed: {e}")
         raise HTTPException(status_code=503, detail="Database dependency check failed")
-
 from app.schemas import ChatRequest, ChatResponse, ArtifactSummary, ArtifactDetail
 from app import crud
 from app.retrieval import retrieve_context, RetrievalError
 from app.agent import call_pi_agent, PiAgentError
-
 @app.post("/api/v1/chat", response_model=ChatResponse)
 def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
     # 1. Session Management
@@ -79,16 +166,16 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
             raise HTTPException(status_code=404, detail="Session not found")
     else:
         db_session = crud.create_session(db)
-
-    # 2. Retrieve history
+    # 2. Retrieve history. History is passed to the model only for explicit
+    # follow-ups or questions that ask about previous turns.
     db_messages = crud.get_session_messages(db, db_session.id)
     history = [{"role": msg.role, "content": msg.content} for msg in db_messages]
 
-    # 3. Retrieve Context via RAG
+    # 3. Detect intent before retrieval. Obvious out-of-scope requests should
+    # not be answered from whichever transcript happens to rank highest.
     is_conversational = False
     lower_q = request.question.strip().lower()
-    
-    # Improved greeting and capability detection
+
     greeting_words = {"hi", "hello", "hey", "greetings", "howdy", "sup", "yo"}
     capability_patterns = [
         r"what can you (do|help)",
@@ -96,24 +183,53 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
         r"explain what you can (do|help)",
         r"how can you (help|assist)",
         r"what are your capabilities",
-        r"how can you help me"
+        r"how can you help me",
     ]
     history_meta_patterns = [
         r"based on (your|the) (previous|earlier|last) answer",
         r"what (did you|target did you|did we) (recommend|say|mention)",
         r"in (your|the) (previous|earlier|last) (answer|message|response)",
         r"what was (your|the) (previous|earlier|last) (answer|response)",
-        r"referring to (your|the) (previous|earlier) answer"
+        r"referring to (your|the) (previous|earlier) answer",
     ]
-    
-    is_greeting = lower_q in greeting_words or (0 < len(lower_q) < 15 and lower_q.split()[0] in greeting_words)
-    is_capability = any(re.search(p, lower_q) for p in capability_patterns)
-    is_history_query = any(re.search(p, lower_q) for p in history_meta_patterns)
-    
+
+    is_greeting = lower_q in greeting_words or (
+        bool(lower_q) and len(lower_q) < 15 and lower_q.split()[0] in greeting_words
+    )
+    is_capability = any(re.search(pattern, lower_q) for pattern in capability_patterns)
+    is_history_query = any(re.search(pattern, lower_q) for pattern in history_meta_patterns)
+    is_follow_up = is_follow_up_question(request.question, history)
+    is_artifact_request = any(
+        keyword in lower_q
+        for keyword in {"html", "landing page", "document", "artifact", "website", "web page", "checklist", "markdown"}
+    )
+
     if is_greeting or is_capability:
         is_conversational = True
-        formatted_context = "The user is greeting you or asking about your capabilities. Briefly explain that you are The Lenny Growth Assistant, a tool that answers questions about growth, product, and leadership using insights from Lenny's Podcast transcripts. No podcast context is needed for this response."
+        formatted_context = (
+            "The user is greeting you or asking about your capabilities. Briefly explain "
+            "that you are The Lenny Growth Assistant, which answers growth, product, "
+            "startup, and leadership questions using Lenny's content. No podcast context is needed."
+        )
         citations = []
+    elif not is_in_scope_question(
+        request.question,
+        is_history_query=is_history_query,
+        is_follow_up=is_follow_up,
+    ):
+        assistant_reply = (
+            "I specialize in source-grounded growth, product, startup, and leadership "
+            "insights from Lenny's Podcast and Newsletter. This question appears to be "
+            "outside that scope, so I can't reliably answer it from the provided sources."
+        )
+        crud.save_message_pair(db, db_session.id, request.question, assistant_reply)
+        return ChatResponse(
+            session_id=db_session.id,
+            response_type="conversational",
+            answer=assistant_reply,
+            artifact=None,
+            citations=[],
+        )
     elif is_history_query:
         if not history:
             assistant_reply = "There is no previous conversation history in this session to refer to."
@@ -123,38 +239,40 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
                 response_type="conversational",
                 answer=assistant_reply,
                 artifact=None,
-                citations=[]
+                citations=[],
             )
-        
-        # Check if the query asks purely about what was previously said/recommended
+
         pure_history_patterns = [
             r"what (target|metric|goal|number) did you recommend",
             r"what did you (recommend|say|mention|suggest)",
             r"what was (your|the) (previous|earlier|last) (answer|recommendation)",
             r"did you recommend",
         ]
-        is_pure_history = any(re.search(p, lower_q) for p in pure_history_patterns)
-        
+        is_pure_history = any(re.search(pattern, lower_q) for pattern in pure_history_patterns)
         if is_pure_history:
             is_conversational = True
-            formatted_context = "The user is asking about what you previously stated or recommended in the conversation history. Answer strictly based on the CONVERSATION HISTORY provided below. If you did NOT recommend a specific target, metric, or item in the previous turns, state clearly that you did not recommend one."
+            formatted_context = (
+                "The user is asking about what was previously stated or recommended. "
+                "Answer strictly from CONVERSATION HISTORY. If no specific target, metric, "
+                "or item was recommended, state that clearly."
+            )
             citations = []
         else:
+            retrieval_query = build_retrieval_query(request.question, history, True)
             try:
-                formatted_context, citations = retrieve_context(request.question, db)
-            except RetrievalError as e:
-                logger.error(f"Retrieval failed: {e}")
-                raise HTTPException(status_code=503, detail=f"Retrieval service unavailable: {e}")
+                formatted_context, citations = retrieve_context(retrieval_query, db)
+            except RetrievalError as exc:
+                logger.error("Retrieval failed: %s", exc)
+                raise HTTPException(status_code=503, detail=f"Retrieval service unavailable: {exc}")
     else:
+        retrieval_query = build_retrieval_query(request.question, history, is_follow_up)
         try:
-            formatted_context, citations = retrieve_context(request.question, db)
-        except RetrievalError as e:
-            logger.error(f"Retrieval failed: {e}")
-            raise HTTPException(status_code=503, detail=f"Retrieval service unavailable: {e}")
-            
-    artifact_keywords = {"html", "landing page", "document", "artifact", "website", "web page", "checklist", "markdown"}
-    is_artifact_request = any(k in lower_q for k in artifact_keywords)
+            formatted_context, citations = retrieve_context(retrieval_query, db)
+        except RetrievalError as exc:
+            logger.error("Retrieval failed: %s", exc)
+            raise HTTPException(status_code=503, detail=f"Retrieval service unavailable: {exc}")
 
+    history_for_agent = history[-8:] if (is_history_query or is_follow_up) else []
     # 4. Validate Provider/Model and Check Credentials
     supported_models = {
         "ollama": ["qwen2.5:3b", "qwen3:4b"],
@@ -162,33 +280,28 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
             "gemini-3.8-flash"
         ]
     }
-    
     if request.provider not in supported_models:
         raise HTTPException(status_code=400, detail=f"Unsupported provider: {request.provider}")
-        
     if request.model not in supported_models[request.provider]:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Unsupported model '{request.model}' for provider '{request.provider}'"
         )
-
     # Explicit credential check for Gemini
     if request.provider == "google":
         if not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
             raise HTTPException(
-                status_code=503, 
+                status_code=503,
                 detail="Gemini API key is missing. Please set GEMINI_API_KEY or GOOGLE_API_KEY in your .env file or environment."
             )
-
     from app.skills.ship30 import is_ship30_request, build_ship30_instruction
     is_essay_request = is_ship30_request(request.question)
     skill_instruction = build_ship30_instruction() if is_essay_request else None
-
     try:
         assistant_reply, artifact_content, parsed_response = call_pi_agent(
             prompt=request.question,
             context=formatted_context,
-            history=history,
+            history=history_for_agent,
             provider=request.provider,
             model=request.model,
             is_artifact_request=is_artifact_request,
@@ -215,16 +328,13 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
         else:
             sanitized_detail = "Agent error: An error occurred while communicating with the AI provider."
             status_code = 502
-            
         raise HTTPException(status_code=status_code, detail=sanitized_detail)
     except Exception as e:
         logger.error(f"Unexpected error during agent inference: {e}")
         raise HTTPException(status_code=500, detail="Internal server error during agent inference")
-
     # 5. Determine intent and filter citations (Application-level Evidence Gate)
     response_type = "grounded_answer"
     from app.validator import validate_evidence, validate_markdown_text, strip_unverified_quotes, secure_artifact_html
-    
     if is_conversational:
         response_type = "conversational"
         citations = []
@@ -241,7 +351,6 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
             evidence_state = parsed_response.get("evidence_state")
             model_answer = parsed_response.get("answer")
             model_citations = parsed_response.get("citations", [])
-            
             if evidence_state not in ("sufficient", "partial", "insufficient") or not model_answer or not isinstance(model_answer, str):
                 # Malformed structure -> drop into markdown fallback
                 parsed_response = None
@@ -277,7 +386,6 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
                     )
                     citations = validation.verified_citations
                     assistant_reply = model_answer
-                    
                     if not validation.has_any_verified:
                         # 0 citations verified
                         response_type = "insufficient_evidence"
@@ -296,7 +404,6 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
                     else:
                         # 100% of citations verified!
                         response_type = "grounded_answer"
-
         # Safe Markdown Fallback if parsed_response was None or malformed
         if not parsed_response or not isinstance(parsed_response, dict):
             has_json_artifacts = (
@@ -308,19 +415,17 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
                 or '```json' in assistant_reply.lower()
                 or assistant_reply.strip().startswith("{")
             )
-
             if has_json_artifacts:
                 # Try to cleanly extract the answer text
-                ans_m = re.search(r'"answer"\s*:\s*"(.*?)"(?:\s*,?\s*"(?:citations|evidence_state)"|\s*\}\s*$)', assistant_reply, re.DOTALL)
+                ans_m = re.search(r'"answer"\s*:\s*"(.*?)"(?:\s*,?\s*"(?:citations|evidence_state)"|\s*\\}\s*$)', assistant_reply, re.DOTALL)
                 if ans_m:
-                    salvaged = ans_m.group(1).replace(r'\"', '"').replace(r'\n', '\n').replace(r'\t', '\t').replace(r'\\', '\\').strip()
+                    salvaged = ans_m.group(1).replace(r'\\"', '"').replace(r'\n', '\n').replace(r'\t', '\t').replace(r'\\\\', '\\\\').strip()
                     if len(salvaged) >= 15 and not (salvaged.startswith("{") and salvaged.endswith("}")):
                         assistant_reply = salvaged
                     else:
                         assistant_reply = ""
                 else:
                     assistant_reply = ""
-
                 # If JSON was malformed and cannot be safely salvaged, return safe fallback without leaking raw JSON
                 if not assistant_reply:
                     response_type = "insufficient_evidence"
@@ -329,7 +434,6 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
                         "I was unable to produce a properly formatted response from the retrieved transcripts. "
                         "Please try asking your question again or rephrasing it."
                     )
-
             if response_type != "insufficient_evidence" or (parsed_response is None and not has_json_artifacts):
                 # Check for explicit refusal or insufficient context signals
                 refusal_signals = [
@@ -355,7 +459,6 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
                     else:
                         response_type = "unverified"
                         citations = []
-
     # 6. Persist to Database — atomic: both messages in one transaction
     # Also persist generated artifact if present
     artifact_id = None
@@ -370,7 +473,6 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
             or "<!doctype" in artifact_content.lower()
         )
         artifact_type = "html" if is_html else "markdown"
-
         if artifact_type == "html":
             title_match = re.search(r'<title>(.*?)</title>', artifact_content, re.IGNORECASE)
             if not title_match:
@@ -387,7 +489,6 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
                 artifact_title = md_title_match.group(1).strip()
             else:
                 artifact_title = request.question[:50]
-
         try:
             db_art = crud.create_artifact(
                 db=db,
@@ -400,7 +501,6 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
             artifact_title = db_art.title
         except Exception as ae:
             logger.error(f"Failed to persist artifact: {ae}")
-
     try:
         crud.save_message_pair(db, db_session.id, request.question, assistant_reply)
     except Exception as e:
@@ -421,7 +521,6 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
             artifact_title=artifact_title,
             citations=citations
         )
-
     # 7. Return response
     return ChatResponse(
         session_id=db_session.id,
@@ -433,12 +532,9 @@ def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
         artifact_title=artifact_title,
         citations=citations
     )
-
-
 # ---------------------------------------------------------------------------
 # Artifact Library Endpoints
 # ---------------------------------------------------------------------------
-
 @app.get("/api/v1/sessions/{session_id}/artifacts", response_model=List[ArtifactSummary])
 def list_session_artifacts(session_id: uuid.UUID, db: Session = Depends(get_db)):
     """List all artifacts generated in the given session."""
@@ -447,8 +543,6 @@ def list_session_artifacts(session_id: uuid.UUID, db: Session = Depends(get_db))
         raise HTTPException(status_code=404, detail="Session not found")
     artifacts = crud.get_session_artifacts(db, session_id)
     return artifacts
-
-
 @app.get("/api/v1/artifacts/{artifact_id}", response_model=ArtifactDetail)
 def get_artifact_endpoint(
     artifact_id: uuid.UUID,
@@ -464,8 +558,6 @@ def get_artifact_endpoint(
                 raise HTTPException(status_code=403, detail="Access denied: Artifact does not belong to this session")
         raise HTTPException(status_code=404, detail="Artifact not found")
     return artifact
-
-
 @app.get("/api/v1/artifacts/{artifact_id}/download")
 def download_artifact(
     artifact_id: uuid.UUID,
@@ -480,19 +572,16 @@ def download_artifact(
             if other:
                 raise HTTPException(status_code=403, detail="Access denied: Artifact does not belong to this session")
         raise HTTPException(status_code=404, detail="Artifact not found")
-
-    safe_title = re.sub(r'[^a-zA-Z0-9_\- ]', '', artifact.title).strip().replace(' ', '_').lower()
+    safe_title = re.sub(r"[^a-zA-Z0-9_ -]", "", artifact.title).strip().replace(" ", "_").lower()
     if not safe_title:
         safe_title = "artifact"
     safe_title = safe_title[:50]
-
     if artifact.artifact_type == "markdown":
         ext = ".md"
         media_type = "text/markdown; charset=utf-8"
     else:
         ext = ".html"
         media_type = "text/html; charset=utf-8"
-
     filename = f"{safe_title}{ext}"
     return Response(
         content=artifact.content,
@@ -501,4 +590,3 @@ def download_artifact(
             "Content-Disposition": f'attachment; filename="{filename}"'
         }
     )
-
