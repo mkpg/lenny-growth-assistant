@@ -2,8 +2,6 @@
 
 **Forward Deployed Engineer Take-Home Assignment | Oogway Labs**  
 **Repository:** [https://github.com/mkpg/lenny-growth-assistant](https://github.com/mkpg/lenny-growth-assistant)  
-**Submission Form:** [https://forms.gle/LgotDHNVxW1mbzNE7](https://forms.gle/LgotDHNVxW1mbzNE7)  
-**Submission Due Date:** 12 October 2026 EOD  
 
 ---
 
