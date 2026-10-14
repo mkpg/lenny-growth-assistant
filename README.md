@@ -3,7 +3,7 @@
 **Forward Deployed Engineer Take-Home Assignment | Oogway Labs**  
 **Repository:** [https://github.com/mkpg/lenny-growth-assistant](https://github.com/mkpg/lenny-growth-assistant)  
 
-
+ 
 ---
 
 ## 1. Executive Summary & Engagement Scenario
